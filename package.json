@@ -1,0 +1,63 @@
+{
+  "name": "nexus-connect",
+  "version": "1.0.0",
+  "description": "",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "dist": "electron-builder --win -p never"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@clerk/clerk-react": "^5.61.4",
+    "@electron-toolkit/utils": "^4.0.0",
+    "@supabase/supabase-js": "^2.103.0",
+    "electron-store": "^11.0.2",
+    "electron-updater": "^6.8.3",
+    "lucide-react": "^1.8.0",
+    "qrcode.react": "^4.2.0",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "react-icons": "^5.6.0",
+    "react-router-dom": "^7.14.0",
+    "recharts": "^3.8.1",
+    "whatsapp-web.js": "^1.34.6",
+    "zustand": "^5.0.12"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.2.2",
+    "@types/node": "^25.6.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^4.7.0",
+    "autoprefixer": "^10.4.27",
+    "electron": "^41.2.0",
+    "electron-builder": "^26.8.1",
+    "electron-vite": "^5.0.0",
+    "postcss": "^8.5.9",
+    "tailwindcss": "^3.4.19",
+    "typescript": "^6.0.2",
+    "vite": "^5.4.21"
+  },
+  "build": {
+    "appId": "com.nexuslead.connect",
+    "productName": "Nexus Connect",
+    "win": {
+      "target": "nsis",
+      "signAndEditExecutable": false
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "neyabansari443-max",
+        "repo": "Nexus-Connect"
+      }
+    ]
+  }
+}
