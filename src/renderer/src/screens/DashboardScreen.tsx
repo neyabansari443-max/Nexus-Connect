@@ -11,7 +11,7 @@ import {
   Users
 } from 'lucide-react'
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis } from 'recharts'
-import { supabase } from '../lib/supabase'
+import { useSupabase } from '../hooks/useSupabase'
 import { useCampaignStore } from '../store/useCampaignStore'
 import { cn } from '../lib/utils'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
@@ -148,7 +148,8 @@ function getStatusVariant(status: string): 'success' | 'warning' | 'danger' | 's
 }
 
 export default function DashboardScreen() {
-  const { userId } = useAuth()
+  const { userId } = useAuth();
+  const supabase = useSupabase();
   const navigate = useNavigate()
   const isEngineRunning = useCampaignStore((state) => state.isEngineRunning)
 
@@ -169,7 +170,7 @@ export default function DashboardScreen() {
       try {
         let totalLeadsAvailable = 0
 
-        if (userId) {
+        if (userId && supabase) {
           const { count, error } = await supabase
             .from('leads')
             .select('*', { count: 'exact', head: true })
@@ -177,12 +178,14 @@ export default function DashboardScreen() {
 
           if (!error && count !== null) {
             totalLeadsAvailable = count
+          } else if (error) {
+            console.error('Failed to load total leads with RLS:', error)
           }
         }
-
+        
+        const accountsRaw = (await window.api?.storeGet?.('whatsappAccounts')) || []
         const historyRaw = (await window.api?.storeGet?.('campaignHistory')) || []
         const logsRaw = (await window.api?.storeGet?.('campaignLogs')) || []
-        const accountsRaw = (await window.api?.storeGet?.('whatsappAccounts')) || []
 
         const history = Array.isArray(historyRaw) ? (historyRaw as CampaignHistoryEntry[]) : []
         const logs = Array.isArray(logsRaw) ? (logsRaw as CampaignLogEntry[]) : []
@@ -232,7 +235,7 @@ export default function DashboardScreen() {
         }
       }
     },
-    [userId]
+    [userId, supabase]
   )
 
   useEffect(() => {

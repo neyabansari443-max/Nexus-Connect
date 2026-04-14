@@ -14,6 +14,9 @@ if (process.contextIsolated) {
       openAuthUrl: (url: string) => ipcRenderer.invoke('auth:open-external', url),
       openExternalUrl: (url: string) => ipcRenderer.invoke('auth:open-external-default', url),
       focusMainWindow: () => ipcRenderer.invoke('auth:focus-main-window'),
+      getAppVersion: () => ipcRenderer.invoke('app:get-version'),
+      sendTelegramSupport: (payload: { email: string; category: string; subject: string; message: string }) =>
+        ipcRenderer.invoke('send-telegram-support', payload),
       storeGet: (key: string) => ipcRenderer.invoke('store-get', key),
       storeSet: (key: string, value: any) => ipcRenderer.invoke('store-set', key, value),
       disconnectWhatsapp: (accountId?: string) => ipcRenderer.invoke('auth:disconnect-whatsapp', accountId),
@@ -48,6 +51,12 @@ if (process.contextIsolated) {
         return () => {
           ipcRenderer.removeListener('force-logs-refresh', callback);
         };
+      },
+      onAuthDeepLink: (callback: (event: any, url: string) => void) => {
+        ipcRenderer.on('auth-deep-link', callback);
+        return () => {
+          ipcRenderer.removeListener('auth-deep-link', callback);
+        };
       }
     })
   } catch (error) {
@@ -67,6 +76,9 @@ if (process.contextIsolated) {
     openAuthUrl: (url: string) => ipcRenderer.invoke('auth:open-external', url),
     openExternalUrl: (url: string) => ipcRenderer.invoke('auth:open-external-default', url),
     focusMainWindow: () => ipcRenderer.invoke('auth:focus-main-window'),
+    getAppVersion: () => ipcRenderer.invoke('app:get-version'),
+    sendTelegramSupport: (payload: { email: string; category: string; subject: string; message: string }) =>
+      ipcRenderer.invoke('send-telegram-support', payload),
     storeGet: (key: string) => ipcRenderer.invoke('store-get', key),
     storeSet: (key: string, value: any) => ipcRenderer.invoke('store-set', key, value),
     disconnectWhatsapp: (accountId?: string) => ipcRenderer.invoke('auth:disconnect-whatsapp', accountId),
@@ -100,6 +112,12 @@ if (process.contextIsolated) {
       ipcRenderer.on('force-logs-refresh', callback);
       return () => {
         ipcRenderer.removeListener('force-logs-refresh', callback);
+      };
+    },
+    onAuthDeepLink: (callback: (event: any, url: string) => void) => {
+      ipcRenderer.on('auth-deep-link', callback);
+      return () => {
+        ipcRenderer.removeListener('auth-deep-link', callback);
       };
     }
   }

@@ -1,6 +1,6 @@
 {
   "name": "nexus-connect",
-  "version": "1.0.0",
+  "version": "1.0.5",
   "description": "",
   "main": "./out/main/index.js",
   "scripts": {
@@ -18,6 +18,7 @@
     "@clerk/clerk-react": "^5.61.4",
     "@electron-toolkit/utils": "^4.0.0",
     "@supabase/supabase-js": "^2.103.0",
+    "dotenv": "^17.4.2",
     "electron-store": "^11.0.2",
     "electron-updater": "^6.8.3",
     "lucide-react": "^1.8.0",
@@ -40,7 +41,9 @@
     "electron": "^41.2.0",
     "electron-builder": "^26.8.1",
     "electron-vite": "^5.0.0",
+    "png-to-ico": "^3.0.1",
     "postcss": "^8.5.9",
+    "sharp": "^0.34.5",
     "tailwindcss": "^3.4.19",
     "typescript": "^6.0.2",
     "vite": "^5.4.21"
@@ -48,9 +51,39 @@
   "build": {
     "appId": "com.nexuslead.connect",
     "productName": "Nexus Connect",
+    "artifactName": "Nexus-Connect-Setup-${version}.${ext}",
+    "protocols": [
+      {
+        "name": "Nexus Connect",
+        "schemes": [
+          "nexusconnect"
+        ]
+      }
+    ],
+    "directories": {
+      "buildResources": "build"
+    },
+    "extraResources": [
+      {
+        "from": "build/icons/icon.png",
+        "to": "icons/icon.png"
+      },
+      {
+        "from": "build/icons/icon.ico",
+        "to": "icons/icon.ico"
+      }
+    ],
     "win": {
       "target": "nsis",
+      "icon": "build/icons/icon.ico",
       "signAndEditExecutable": false
+    },
+    "nsis": {
+      "installerIcon": "build/icons/icon.ico",
+      "uninstallerIcon": "build/icons/icon.ico",
+      "installerHeaderIcon": "build/icons/icon.ico",
+      "deleteAppDataOnUninstall": true,
+      "include": "build/installer.nsh"
     },
     "publish": [
       {

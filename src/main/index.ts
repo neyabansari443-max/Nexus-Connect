@@ -1,12 +1,15 @@
 import { app, shell, BrowserWindow, ipcMain } from 'electron'
-import { join } from 'path'
-import { existsSync, rmSync } from 'fs'
+import { createServer } from 'http'
+import type { Server } from 'http'
+import { dirname, join, resolve } from 'path'
+import { existsSync, readFileSync, rmSync } from 'fs'
 import { spawn } from 'child_process'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { autoUpdater } from 'electron-updater'
 import { Client, LocalAuth } from 'whatsapp-web.js'
 import StoreType from 'electron-store'
 import { createClient } from '@supabase/supabase-js'
+import { config as dotenvConfig } from 'dotenv'
 
 const Store = (StoreType as unknown as { default: typeof StoreType }).default || StoreType
 
@@ -21,6 +24,9 @@ const DEFAULT_WINDOW_WIDTH = 1360
 const DEFAULT_WINDOW_HEIGHT = 800
 const MIN_WINDOW_WIDTH = 1260
 const MIN_WINDOW_HEIGHT = 720
+const PACKAGED_RENDERER_HOST = 'localhost'
+const PACKAGED_RENDERER_PORT = 5173
+const CUSTOM_PROTOCOL_SCHEME = 'nexusconnect'
 
 // Initialize Supabase in the Main Process using the provided env variables.
 const supabaseUrl =
@@ -56,6 +62,13 @@ type Lead = {
   city?: string
 }
 
+type SupportTicketPayload = {
+  email?: string
+  category?: string
+  subject?: string
+  message?: string
+}
+
 type PlanType = 'pro' | 'basic' | 'free' | 'unknown'
 
 type LogCallback = (message: string) => void
@@ -73,6 +86,135 @@ const waSessions = new Map<string, WhatsAppSession>()
 
 let mainWindowRef: BrowserWindow | null = null
 let isEngineRunning = false
+let rendererServer: Server | null = null
+let rendererServerUrl: string | null = null
+let pendingDeepLinkUrl: string | null = null
+let runtimeEnvLoaded = false
+
+function loadRuntimeEnvIfNeeded(): void {
+  if (runtimeEnvLoaded) {
+    return
+  }
+
+  const envCandidates = [
+    join(process.cwd(), '.env'),
+    join(app.getAppPath(), '.env'),
+    resolve(app.getAppPath(), '..', '.env'),
+    resolve(app.getAppPath(), '..', '..', '.env'),
+    join(dirname(app.getPath('exe')), '.env'),
+    join(process.resourcesPath, '.env'),
+    join(process.resourcesPath, 'app.asar.unpacked', '.env')
+  ]
+
+  for (const envPath of envCandidates) {
+    if (existsSync(envPath)) {
+      dotenvConfig({ path: envPath, override: true })
+    }
+  }
+
+  runtimeEnvLoaded = true
+}
+
+function splitTelegramMessage(text: string, maxLength = 3800): string[] {
+  const input = String(text || '')
+  if (!input) {
+    return ['']
+  }
+
+  if (input.length <= maxLength) {
+    return [input]
+  }
+
+  const chunks: string[] = []
+  let start = 0
+
+  while (start < input.length) {
+    let end = Math.min(start + maxLength, input.length)
+
+    if (end < input.length) {
+      const newlineIndex = input.lastIndexOf('\n', end)
+      if (newlineIndex > start + Math.floor(maxLength * 0.6)) {
+        end = newlineIndex
+      }
+    }
+
+    chunks.push(input.slice(start, end).trim())
+    start = end
+  }
+
+  return chunks.filter((chunk) => chunk.length > 0)
+}
+
+function getTelegramConfig(): { token: string; chatId: string } {
+  loadRuntimeEnvIfNeeded()
+  return {
+    token: String(process.env.TELEGRAM_BOT_TOKEN || '').trim(),
+    chatId: String(process.env.TELEGRAM_CHAT_ID || '').trim()
+  }
+}
+
+function extractDeepLinkFromArgs(argv: string[]): string | null {
+  const prefix = `${CUSTOM_PROTOCOL_SCHEME}://`
+  const matched = argv.find((arg) => arg.startsWith(prefix))
+  return matched || null
+}
+
+function focusMainWindow(): void {
+  const win = mainWindowRef ?? BrowserWindow.getAllWindows()[0]
+  if (!win || win.isDestroyed()) {
+    return
+  }
+
+  if (win.isMinimized()) {
+    win.restore()
+  }
+
+  win.show()
+  win.focus()
+}
+
+function handleDeepLink(url: string): void {
+  const normalized = String(url || '').trim()
+  if (!normalized.startsWith(`${CUSTOM_PROTOCOL_SCHEME}://`)) {
+    return
+  }
+
+  pendingDeepLinkUrl = normalized
+
+  const win = mainWindowRef ?? BrowserWindow.getAllWindows()[0]
+  if (!win || win.isDestroyed()) {
+    return
+  }
+
+  focusMainWindow()
+  win.webContents.send('auth-deep-link', normalized)
+  pendingDeepLinkUrl = null
+}
+
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!gotSingleInstanceLock) {
+  app.quit()
+} else {
+  app.on('second-instance', (_event, argv) => {
+    const deepLink = extractDeepLinkFromArgs(argv)
+    if (deepLink) {
+      handleDeepLink(deepLink)
+      return
+    }
+
+    focusMainWindow()
+  })
+}
+
+const initialDeepLink = extractDeepLinkFromArgs(process.argv)
+if (initialDeepLink) {
+  pendingDeepLinkUrl = initialDeepLink
+}
+
+app.on('open-url', (event, url) => {
+  event.preventDefault()
+  handleDeepLink(url)
+})
 
 function resolveAccountId(accountId?: string): string {
   const normalized = accountId?.trim()
@@ -133,64 +275,6 @@ function openInChrome(url: string): boolean {
   }
 
   return false
-}
-
-function normalizePlanType(rawPlanType: string | null | undefined): PlanType {
-  const normalized = (rawPlanType ?? '').toLowerCase()
-
-  if (normalized === 'pro') {
-    return 'pro'
-  }
-
-  if (normalized === 'basic') {
-    return 'basic'
-  }
-
-  if (normalized === 'free') {
-    return 'free'
-  }
-
-  return 'free'
-}
-
-async function fetchPlanTypeByUserId(userId: string): Promise<PlanType> {
-  if (!userId) {
-    return 'unknown'
-  }
-
-  const settingsResult = await supabase
-    .from('user_settings')
-    .select('plan_type')
-    .eq('user_id', userId)
-    .limit(1)
-    .maybeSingle()
-
-  if (settingsResult.data?.plan_type) {
-    return normalizePlanType(settingsResult.data.plan_type)
-  }
-
-  const usageResult = await supabase
-    .from('user_usage')
-    .select('plan_type')
-    .eq('user_id', userId)
-    .limit(1)
-    .maybeSingle()
-
-  if (usageResult.data?.plan_type) {
-    return normalizePlanType(usageResult.data.plan_type)
-  }
-
-  return 'free'
-}
-
-async function verifyProAccess(userId: string): Promise<boolean> {
-  try {
-    const planType = await fetchPlanTypeByUserId(userId)
-    return planType === 'pro'
-  } catch (error) {
-    console.error('Plan verification failed:', error)
-    return false
-  }
 }
 
 async function handleIncomingReply(message: any): Promise<void> {
@@ -448,10 +532,121 @@ function persistWindowBounds(window: BrowserWindow): void {
   })
 }
 
-function createWindow(): void {
+function getRendererRootPath(): string {
+  const candidates = [
+    join(app.getAppPath(), 'out', 'renderer'),
+    join(__dirname, '../renderer'),
+    join(process.cwd(), 'out', 'renderer')
+  ]
+
+  const resolved = candidates.find((candidate) => existsSync(join(candidate, 'index.html')))
+  return resolved || join(__dirname, '../renderer')
+}
+
+function getContentType(filePath: string): string {
+  if (filePath.endsWith('.js')) return 'application/javascript'
+  if (filePath.endsWith('.css')) return 'text/css'
+  if (filePath.endsWith('.html')) return 'text/html'
+  if (filePath.endsWith('.png')) return 'image/png'
+  if (filePath.endsWith('.svg')) return 'image/svg+xml'
+  if (filePath.endsWith('.json')) return 'application/json'
+  return 'application/octet-stream'
+}
+
+async function ensureRendererServer(): Promise<string> {
+  if (rendererServerUrl) {
+    return rendererServerUrl
+  }
+
+  const rendererRoot = getRendererRootPath()
+  const rootResolved = resolve(rendererRoot)
+  const indexPath = join(rootResolved, 'index.html')
+
+  rendererServer = createServer((req, res) => {
+    const requestedPath = decodeURIComponent((req.url || '/').split('?')[0])
+    const candidatePath = requestedPath === '/' ? 'index.html' : requestedPath.replace(/^\/+/, '')
+    const absolutePath = resolve(rootResolved, candidatePath)
+
+    let filePath = absolutePath
+    if (!absolutePath.startsWith(rootResolved)) {
+      filePath = indexPath
+    }
+
+    try {
+      const content = readFileSync(filePath)
+      res.writeHead(200, { 'Content-Type': getContentType(filePath) })
+      res.end(content)
+      return
+    } catch {
+      // SPA fallback to index.html when route or asset is unavailable.
+    }
+
+    try {
+      const content = readFileSync(indexPath)
+      res.writeHead(200, { 'Content-Type': 'text/html' })
+      res.end(content)
+    } catch {
+      res.writeHead(500, { 'Content-Type': 'text/plain' })
+      res.end('Failed to load renderer')
+    }
+  })
+
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    rendererServer?.once('error', rejectPromise)
+    rendererServer?.listen(PACKAGED_RENDERER_PORT, PACKAGED_RENDERER_HOST, () => {
+      const address = rendererServer?.address()
+      if (address && typeof address === 'object') {
+        rendererServerUrl = `http://${PACKAGED_RENDERER_HOST}:${address.port}`
+        resolvePromise()
+      } else {
+        rejectPromise(new Error('Unable to allocate local renderer port'))
+      }
+    })
+  })
+
+  return rendererServerUrl as string
+}
+
+function closeRendererServer(): void {
+  if (!rendererServer) {
+    return
+  }
+
+  rendererServer.close()
+  rendererServer = null
+  rendererServerUrl = null
+}
+
+async function ensurePackagedAuthReset(mainWindow: BrowserWindow): Promise<void> {
+  if (!app.isPackaged) {
+    return
+  }
+
+  const currentVersion = app.getVersion()
+  const markerKey = 'authStorageResetVersion'
+  const alreadyResetForVersion = (store.get(markerKey) as string | undefined) === currentVersion
+
+  if (alreadyResetForVersion) {
+    return
+  }
+
+  try {
+    await mainWindow.webContents.session.clearStorageData({
+      storages: ['cookies', 'localstorage', 'indexdb', 'serviceworkers', 'cachestorage']
+    })
+    console.log(`[auth] Cleared persisted auth storage for app version ${currentVersion}`)
+  } catch (error) {
+    console.error('[auth] Failed to clear auth storage:', error)
+  } finally {
+    store.set(markerKey, currentVersion)
+  }
+}
+
+async function createWindow(): Promise<void> {
   const initialBounds = getInitialWindowBounds()
 
   const iconCandidates = [
+    join(process.resourcesPath, 'icons', 'icon.png'),
     join(process.cwd(), 'src', 'renderer', 'assets', 'logo-removebg-preview.png'),
     join(app.getAppPath(), 'src', 'renderer', 'assets', 'logo-removebg-preview.png'),
     join(__dirname, '../../src/renderer/assets/logo-removebg-preview.png'),
@@ -505,6 +700,15 @@ function createWindow(): void {
     }
   })
 
+  mainWindow.webContents.on('did-finish-load', () => {
+    if (!pendingDeepLinkUrl) {
+      return
+    }
+
+    mainWindow.webContents.send('auth-deep-link', pendingDeepLinkUrl)
+    pendingDeepLinkUrl = null
+  })
+
   mainWindow.webContents.setWindowOpenHandler((details) => {
     // Clerk popup flow starts from about:blank and then navigates to provider OAuth pages.
     if (details.url.startsWith('about:')) {
@@ -527,10 +731,13 @@ function createWindow(): void {
     return { action: 'deny' }
   })
 
+  await ensurePackagedAuthReset(mainWindow)
+
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    const rendererUrl = await ensureRendererServer()
+    mainWindow.loadURL(rendererUrl)
   }
 }
 
@@ -690,6 +897,64 @@ async function startWhatsAppSendingSession(
 // -------------------------------------------------------------
 // STEP 3: IPC Communication & Main Process
 // -------------------------------------------------------------
+ipcMain.handle('app:get-version', () => {
+  return app.getVersion()
+})
+
+ipcMain.handle('send-telegram-support', async (_event, payload: SupportTicketPayload) => {
+  const email = String(payload?.email ?? '').trim()
+  const category = String(payload?.category ?? '').trim()
+  const subject = String(payload?.subject ?? '').trim()
+  const message = String(payload?.message ?? '').trim()
+
+  if (!email || !category || !subject || !message) {
+    throw new Error('Missing required support fields')
+  }
+
+  const { token: telegramBotToken, chatId: telegramChatId } = getTelegramConfig()
+
+  if (!telegramBotToken || !telegramChatId) {
+    throw new Error('Telegram support is not configured')
+  }
+
+  const text = [
+    'New Support Ticket - NexusConnect',
+    `User Email: ${email}`,
+    `Category: ${category}`,
+    `Subject: ${subject}`,
+    `Message: ${message}`
+  ].join('\n')
+
+  const chunks = splitTelegramMessage(text)
+
+  for (let index = 0; index < chunks.length; index += 1) {
+    const chunk = chunks[index]
+    const chunkText =
+      chunks.length > 1 ? `[Part ${index + 1}/${chunks.length}]\n${chunk}` : chunk
+
+    const response = await fetch(`https://api.telegram.org/bot${telegramBotToken}/sendMessage`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        chat_id: telegramChatId,
+        text: chunkText,
+        disable_web_page_preview: true
+      })
+    })
+
+    const result = (await response.json().catch(() => null)) as { ok?: boolean; description?: string } | null
+
+    if (!response.ok || !result?.ok) {
+      const reason = result?.description || `HTTP ${response.status}`
+      throw new Error(`Telegram API error: ${reason}`)
+    }
+  }
+
+  return { ok: true }
+})
+
 ipcMain.handle('store-get', (_event, key) => {
   return store.get(key)
 })
@@ -730,7 +995,7 @@ ipcMain.on('start-sending-engine', async (event, args) => {
     return
   }
 
-  const isProUser = await verifyProAccess(userId)
+  const isProUser = !!args?.isPro
   if (!isProUser) {
     logToTerminal('[LOCKED] Pro subscription required. Please upgrade from Settings > Subscription tab.')
     isEngineRunning = false
@@ -859,7 +1124,17 @@ ipcMain.handle('auth:connect-whatsapp', async (_event, accountId?: string) => {
 })
 
 app.whenReady().then(() => {
-  electronApp.setAppUserModelId('com.nexusconnect.app')
+  loadRuntimeEnvIfNeeded()
+
+  if (process.defaultApp) {
+    if (process.argv.length >= 2) {
+      app.setAsDefaultProtocolClient(CUSTOM_PROTOCOL_SCHEME, process.execPath, [resolve(process.argv[1])])
+    }
+  } else {
+    app.setAsDefaultProtocolClient(CUSTOM_PROTOCOL_SCHEME)
+  }
+
+  electronApp.setAppUserModelId('com.nexuslead.connect')
 
   setupAutoUpdaterLogging()
   void autoUpdater.checkForUpdatesAndNotify().catch((error) => {
@@ -870,14 +1145,18 @@ app.whenReady().then(() => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  createWindow()
+  void createWindow()
 
   app.on('activate', function () {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    if (BrowserWindow.getAllWindows().length === 0) {
+      void createWindow()
+    }
   })
 })
 
 app.on('before-quit', () => {
+  closeRendererServer()
+
   for (const session of waSessions.values()) {
     void session.client.destroy().catch(() => undefined)
   }

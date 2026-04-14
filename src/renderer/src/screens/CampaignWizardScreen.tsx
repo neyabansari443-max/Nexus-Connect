@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Send, UploadCloud, FileText, CheckCircle2, ChevronDown, ShieldCheck } from 'lucide-react';
 import { useAuth } from '@clerk/clerk-react';
-import { supabase } from '../lib/supabase';
+import { useSupabase } from '../hooks/useSupabase'
 import { usePlan } from '../features/subscription/plan';
 import ActionDialog from '../components/ActionDialog';
 
@@ -9,6 +9,7 @@ const BILLING_URL = 'https://nexuslead.live/dashboard/billing';
 
 export default function CampaignWizardScreen() {
   const { userId } = useAuth();
+  const supabase = useSupabase();
   const { isPro } = usePlan();
   const [step, setStep] = useState(1);
   const [categories, setCategories] = useState<string[]>([]);
@@ -51,30 +52,37 @@ export default function CampaignWizardScreen() {
   useEffect(() => {
     async function fetchCategories() {
       setLoadingCategories(true);
-      if (userId) {
+
+      if (userId && supabase) {
         const { data, error } = await supabase
           .from('leads')
           .select('category')
           .eq('user_id', userId);
-        
+
         if (!error && data) {
-          const uniqueCategories = Array.from(new Set(data.map(item => item.category).filter(Boolean)));
-          setCategories(uniqueCategories);
+          const uniqueCategories = Array.from(new Set(data.map((item: any) => item.category).filter(Boolean)));
+          setCategories(uniqueCategories as string[]);
+        } else if (error) {
+          console.error('Failed to load lead categories with RLS:', error);
+          setCategories([]);
         }
+      } else {
+        setCategories([]);
       }
       setLoadingCategories(false);
     }
     fetchCategories();
-  }, [userId]);
+  }, [userId, supabase]);
 
   useEffect(() => {
     async function fetchLeadsForCategory() {
-      if (!selectedCategory || !userId) {
+      if (!selectedCategory || !userId || !supabase) {
         setLeads([]);
         return;
       }
       
       setLoadingLeads(true);
+
       const { data, error } = await supabase
         .from('leads')
         .select('*')
@@ -85,15 +93,16 @@ export default function CampaignWizardScreen() {
         .neq('phone', '');
 
       if (!error && data) {
-        setLeads(data.map(lead => ({ ...lead, checked: true })));
+        setLeads(data.map((lead: any) => ({ ...lead, checked: true })));
       } else {
+        console.error('Failed to load leads with RLS:', error);
         setLeads([]);
       }
       setLoadingLeads(false);
     }
     
     fetchLeadsForCategory();
-  }, [selectedCategory, userId]);
+  }, [selectedCategory, userId, supabase]);
 
   const handleToggleLead = (id: string) => {
     setLeads(prev => prev.map(lead => lead.id === id ? { ...lead, checked: !lead.checked } : lead));
@@ -107,7 +116,7 @@ export default function CampaignWizardScreen() {
     if (window.api && window.api.startSending) {
       // Save active explicitly before starting so backend reads correct folder
       window.api.storeSet('activeAccountId', selectedAccountId).then(() => {
-        window.api.startSending({ leads: checkedLeads, template, userId });
+        window.api.startSending({ leads: checkedLeads, template, userId, isPro });
         setStep(4);
       });
     } else {

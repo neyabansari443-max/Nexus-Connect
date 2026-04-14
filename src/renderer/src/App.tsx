@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ComponentType, ReactNode } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom';
 import { ClerkFailed, ClerkLoaded, ClerkLoading, SignedIn, SignedOut, UserButton, useSignIn } from '@clerk/clerk-react';
-import { Crown, LayoutDashboard, Loader2, Megaphone, Settings, Activity, ShieldCheck } from 'lucide-react';
+import { Crown, LayoutDashboard, Loader2, Megaphone, Settings, Activity, ShieldCheck, LifeBuoy } from 'lucide-react';
 import { FaGithub } from 'react-icons/fa';
 import { FcGoogle } from 'react-icons/fc';
 import DashboardScreen from './screens/DashboardScreen';
@@ -11,8 +11,8 @@ import LiveTerminal from './components/LiveTerminal';
 import { PlanProvider, usePlan } from './features/subscription/plan';
 import SettingsScreen from './screens/SettingsScreen';
 import TrackingScreen from './screens/TrackingScreen';
+import SupportFeedbackScreen from './screens/SupportFeedbackScreen';
 import { useCampaignStore } from './store/useCampaignStore';
-import { useEffect } from 'react';
 import nexusLogo from '../assets/logo-removebg-preview.png';
 
 function MicrosoftLogo({ className }: { className?: string }) {
@@ -27,6 +27,35 @@ function MicrosoftLogo({ className }: { className?: string }) {
 }
 
 export default function App() {
+  const [appVersion, setAppVersion] = useState<string>('...');
+  const isBrowserOAuthCallback =
+    typeof window !== 'undefined' &&
+    window.location.pathname === '/oauth-callback' &&
+    typeof window.api?.openAuthUrl !== 'function';
+
+  useEffect(() => {
+    let mounted = true;
+
+    const loadVersion = async () => {
+      try {
+        const version = await window.api?.getAppVersion?.();
+        if (mounted && version) {
+          setAppVersion(version);
+        }
+      } catch {
+        if (mounted) {
+          setAppVersion('unknown');
+        }
+      }
+    };
+
+    void loadVersion();
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
   return (
     <Router>
       <ClerkLoading>
@@ -48,24 +77,68 @@ export default function App() {
       </ClerkFailed>
 
       <ClerkLoaded>
-        <SignedIn>
-          <PlanProvider>
-            <WorkspaceShell />
-          </PlanProvider>
-        </SignedIn>
+        {isBrowserOAuthCallback ? (
+          <OAuthBrowserCallbackView />
+        ) : (
+          <>
+            <SignedIn>
+              <PlanProvider>
+                <WorkspaceShell appVersion={appVersion} />
+              </PlanProvider>
+            </SignedIn>
 
-        <SignedOut>
-          <SignedOutView />
-        </SignedOut>
+            <SignedOut>
+              <SignedOutView appVersion={appVersion} />
+            </SignedOut>
+          </>
+        )}
       </ClerkLoaded>
     </Router>
   );
 }
 
-function SignedOutView() {
+function SignedOutView({ appVersion }: { appVersion: string }) {
   const { isLoaded, signIn, setActive } = useSignIn();
   const [activeProvider, setActiveProvider] = useState<'google' | 'microsoft' | 'github' | null>(null);
   const [authStatus, setAuthStatus] = useState<string>('');
+
+  const isOAuthCallbackRoute = typeof window !== 'undefined' && window.location.pathname === '/oauth-callback';
+  const isExternalBrowserCallback =
+    isOAuthCallbackRoute && typeof window.api?.openAuthUrl !== 'function';
+
+  useEffect(() => {
+    if (!window.api?.onAuthDeepLink) {
+      return;
+    }
+
+    return window.api.onAuthDeepLink((_event, url) => {
+      const normalized = String(url || '');
+      if (!normalized.startsWith('nexusconnect://auth-callback')) {
+        return;
+      }
+
+      setAuthStatus('Auth callback received. Finalizing sign-in...');
+
+      try {
+        const parsed = new URL(normalized);
+        const sessionId =
+          parsed.searchParams.get('created_session_id') ||
+          parsed.searchParams.get('__clerk_created_session') ||
+          parsed.searchParams.get('session_id');
+
+        if (sessionId) {
+          void setActive({ session: sessionId });
+          setAuthStatus('Login successful. Redirecting...');
+        }
+      } catch {
+        // Ignore parsing failures and rely on Clerk polling fallback.
+      }
+    });
+  }, [setActive]);
+
+  if (isExternalBrowserCallback) {
+    return <OAuthBrowserCallbackView />;
+  }
 
   type ProviderConfig = {
     id: 'google' | 'microsoft' | 'github';
@@ -129,7 +202,7 @@ function SignedOutView() {
       }
 
       await window.api.openAuthUrl(externalUrl);
-      setAuthStatus('Chrome opened. Complete login there, app will auto-detect.');
+      setAuthStatus('Chrome opened. Complete login there; the app will detect your session automatically.');
 
       let latestAttempt = signInAttempt;
 
@@ -159,7 +232,7 @@ function SignedOutView() {
   };
 
   return (
-    <div className="flex h-screen w-screen items-center justify-center bg-gradient-to-br from-black to-[#1a1a2e]">
+    <div className="relative flex h-screen w-screen items-center justify-center bg-gradient-to-br from-black to-[#1a1a2e]">
       <div className="text-center space-y-5 shadow-2xl bg-zinc-900 border border-zinc-700/50 p-8 rounded-2xl w-full max-w-md">
         <h2 className="text-2xl font-bold tracking-tight">Access Nexus Connect</h2>
         <div className="space-y-3">
@@ -193,11 +266,12 @@ function SignedOutView() {
 
         {authStatus ? <p className="text-xs text-zinc-300 leading-relaxed">{authStatus}</p> : null}
       </div>
+      <div className="absolute bottom-4 right-5 text-[11px] text-zinc-500">v{appVersion}</div>
     </div>
   );
 }
 
-function WorkspaceShell() {
+function WorkspaceShell({ appVersion }: { appVersion: string }) {
   const setEngineRunning = useCampaignStore((state) => state.setEngineRunning);
 
   useEffect(() => {
@@ -211,7 +285,7 @@ function WorkspaceShell() {
 
   return (
     <div className="flex h-screen w-screen bg-[#0a0a0b] text-white font-sans overflow-hidden">
-      <Sidebar />
+      <Sidebar appVersion={appVersion} />
       <div className="flex flex-col flex-1 pl-64">
         <main className="flex-1 p-8 pb-8 overflow-y-auto">
           <Routes>
@@ -232,6 +306,7 @@ function WorkspaceShell() {
               }
             />
             <Route path="/tracking" element={<TrackingScreen />} />
+            <Route path="/support" element={<SupportFeedbackScreen />} />
             <Route path="/settings" element={<SettingsScreen />} />
           </Routes>
         </main>
@@ -272,13 +347,14 @@ function ProFeatureGate({ feature, children }: { feature: 'dashboard' | 'campaig
   return <>{children}</>;
 }
 
-function Sidebar() {
+function Sidebar({ appVersion }: { appVersion: string }) {
   const location = useLocation();
   const { isLoading, isPro } = usePlan();
   const navItems = [
     { name: 'Dashboard', icon: <LayoutDashboard size={20} />, path: '/' },
     { name: 'Campaigns', icon: <Megaphone size={20} />, path: '/campaigns' },
     { name: 'Tracking', icon: <Activity size={20} />, path: '/tracking' },
+    { name: 'Help & Feedback', icon: <LifeBuoy size={20} />, path: '/support' },
     { name: 'Settings', icon: <Settings size={20} />, path: '/settings' },
   ];
 
@@ -322,29 +398,57 @@ function Sidebar() {
         )}
       </div>
       
-      <div className="bg-zinc-900/50 rounded-xl p-4 border border-zinc-800 flex items-center justify-between">
-        <div className="flex items-center space-x-3">
-          <UserButton afterSignOutUrl="/" appearance={{ elements: { userButtonAvatarBox: "w-8 h-8" } }} />
-          <div className="text-xs">
-            <span className="block font-medium text-white">Profile</span>
-            {isLoading ? (
-              <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Checking plan...</span>
-            ) : isPro ? (
-              <span className="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-300 uppercase tracking-wider px-1.5 py-0.5 rounded-sm bg-indigo-500/20 border border-indigo-400/30">
-                <Crown className="w-3 h-3" />
-                Pro
-              </span>
-            ) : (
-              <Link
-                to="/settings"
-                className="inline-flex text-[10px] font-bold text-amber-300 uppercase tracking-wider px-1.5 py-0.5 rounded-sm bg-amber-500/15 border border-amber-400/30 hover:bg-amber-500/25 transition"
-              >
-                Get Pro
-              </Link>
-            )}
+      <div className="space-y-2">
+        <div className="bg-zinc-900/50 rounded-xl p-4 border border-zinc-800 flex items-center justify-between">
+          <div className="flex items-center space-x-3">
+            <UserButton
+              afterSignOutUrl="/"
+              appearance={{
+                elements: {
+                  userButtonAvatarBox: 'w-8 h-8',
+                  userButtonPopoverActionButton__manageAccount: 'hidden'
+                }
+              }}
+            />
+            <div className="text-xs">
+              <span className="block font-medium text-white">Profile</span>
+              {isLoading ? (
+                <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Checking plan...</span>
+              ) : isPro ? (
+                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-300 uppercase tracking-wider px-1.5 py-0.5 rounded-sm bg-indigo-500/20 border border-indigo-400/30">
+                  <Crown className="w-3 h-3" />
+                  Pro
+                </span>
+              ) : (
+                <Link
+                  to="/settings"
+                  className="inline-flex text-[10px] font-bold text-amber-300 uppercase tracking-wider px-1.5 py-0.5 rounded-sm bg-amber-500/15 border border-amber-400/30 hover:bg-amber-500/25 transition"
+                >
+                  Get Pro
+                </Link>
+              )}
+            </div>
           </div>
         </div>
+        <p className="px-1 text-right text-[11px] text-zinc-500">v{appVersion}</p>
       </div>
     </aside>
+  );
+}
+
+function OAuthBrowserCallbackView() {
+  return (
+    <div className="flex h-screen w-screen items-center justify-center bg-gradient-to-br from-black to-[#1a1a2e]">
+      <div className="text-center space-y-4 shadow-2xl bg-zinc-900 border border-zinc-700/50 p-8 rounded-2xl w-full max-w-md">
+        <div className="mx-auto grid h-12 w-12 place-items-center rounded-full border border-emerald-400/40 bg-emerald-500/15">
+          <ShieldCheck className="h-6 w-6 text-emerald-300" />
+        </div>
+        <h2 className="text-2xl font-bold tracking-tight text-white">You are logged in</h2>
+        <p className="text-sm text-zinc-300 leading-relaxed">
+          Authentication completed successfully. You can close this browser tab and return to Nexus Connect.
+        </p>
+        <p className="text-xs text-zinc-500">If the app does not refresh instantly, switch back to the desktop app once.</p>
+      </div>
+    </div>
   );
 }

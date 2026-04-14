@@ -1,7 +1,7 @@
 import { useAuth } from '@clerk/clerk-react'
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import { supabase } from '../../lib/supabase'
+import { useSupabase } from '../../hooks/useSupabase'
 
 export type PlanType = 'pro' | 'basic' | 'free' | 'unknown'
 export type FeatureKey = 'dashboard' | 'campaigns' | 'settings'
@@ -44,60 +44,9 @@ function normalizePlanType(rawPlanType: string | null | undefined): PlanType {
   return 'free'
 }
 
-async function fetchPlanTypeByUserId(userId: string): Promise<{ planType: PlanType; source: string; errors: string[] }> {
-  const errors: string[] = []
-
-  if (!supabase) {
-    return { planType: 'free', source: 'none', errors }
-  }
-
-  const settingsResult = await supabase
-    .from('user_settings')
-    .select('plan_type')
-    .eq('user_id', userId)
-    .limit(1)
-    .maybeSingle()
-
-  if (settingsResult.error) {
-    errors.push(`user_settings: ${settingsResult.error.message}`)
-  }
-
-  if (settingsResult.data?.plan_type) {
-    return {
-      planType: normalizePlanType(settingsResult.data.plan_type),
-      source: 'user_settings',
-      errors
-    }
-  }
-
-  const usageResult = await supabase
-    .from('user_usage')
-    .select('plan_type')
-    .eq('user_id', userId)
-    .limit(1)
-    .maybeSingle()
-
-  if (usageResult.error) {
-    errors.push(`user_usage: ${usageResult.error.message}`)
-  }
-
-  if (usageResult.data?.plan_type) {
-    return {
-      planType: normalizePlanType(usageResult.data.plan_type),
-      source: 'user_usage',
-      errors
-    }
-  }
-
-  return {
-    planType: 'free',
-    source: 'not-found',
-    errors
-  }
-}
-
 export function PlanProvider({ children }: { children: ReactNode }) {
-  const { isLoaded, userId } = useAuth()
+  const { isLoaded, userId } = useAuth();
+  const supabase = useSupabase();
   const [planType, setPlanType] = useState<PlanType>('unknown')
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -131,16 +80,45 @@ export function PlanProvider({ children }: { children: ReactNode }) {
     }
     setError(null)
 
-    const lookup = await fetchPlanTypeByUserId(userId)
-    setPlanType(lookup.planType)
-    setSource(lookup.source)
-    setIsLoading(false)
-    lastResolvedUserIdRef.current = userId
+    
 
-    if (lookup.errors.length && lookup.source === 'not-found') {
-      setError(lookup.errors.join(' | '))
+    const lookup = { planType: 'free' as PlanType, source: 'not-found', errors: [] as string[] };
+    if (supabase) {
+      // 1. PRIMARY: Check user_usage directly as instructed by the user
+      const { data: usageData, error: usageError } = await supabase
+        .from('user_usage')
+        .select('plan_type')
+        .eq('user_id', userId)
+        .limit(1)
+        .maybeSingle()
+
+      if (!usageError && usageData?.plan_type && normalizePlanType(usageData.plan_type) === 'pro') {
+        lookup.planType = 'pro'
+        lookup.source = 'user_usage'
+      } 
+      // 2. FALLBACK/SECONDARY: Check user_settings
+      else {
+        const { data: settingsData, error: settingsError } = await supabase
+          .from('user_settings')
+          .select('plan_type')
+          .eq('user_id', userId)
+          .limit(1)
+          .maybeSingle()
+
+        if (!settingsError && settingsData?.plan_type && normalizePlanType(settingsData.plan_type) === 'pro') {
+          lookup.planType = 'pro'
+          lookup.source = 'user_settings'
+        } else if (usageError || settingsError) {
+          lookup.errors.push(usageError?.message || settingsError?.message || 'error')
+        }
+      }
     }
-  }, [isLoaded, userId])
+    setPlanType(lookup.planType);
+    setSource(lookup.source);
+    setIsLoading(false);
+    lastResolvedUserIdRef.current = userId;
+    if (lookup.errors.length && lookup.source === 'not-found') { setError(lookup.errors.join(' | ')); }
+  }, [isLoaded, userId, supabase])
 
   useEffect(() => {
     void loadPlan()
